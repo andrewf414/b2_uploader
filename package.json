@@ -1,0 +1,14 @@
+{
+  "name": "backblaze",
+  "version": "1.0.0",
+  "description": "uploader of photos and video to backblaze b2",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Andrew Fitzgerald",
+  "license": "ISC",
+  "dependencies": {
+    "node-fetch": "^2.6.0"
+  }
+}
