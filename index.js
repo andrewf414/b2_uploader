@@ -7,7 +7,7 @@ var crypto = require("crypto");
 
 const GLOBALS = {
   LOG_PATH: "E:/Photos/",
-  directory: "E:/Photos/2018", // where we are uploading from
+  directory: "E:/Photos", // where we are uploading from
   recursive: true, // whether to do sub-directories
   rootDir: "E:/Photos/", // the base folder that everything should not be part of b2 file structure as it's the bucket
   b2uploaded: `E:/Photos/b2uploaded.txt`, // where the log of uploaded files is kept
@@ -18,16 +18,13 @@ const GLOBALS = {
 };
 
 //#region Helper functions
-// Read in the directories for functions
-// const getDirectories = source =>
-//   readdirSync(source, { withFileTypes: true })
-//     .filter(dirent => dirent.isDirectory())
-//     .map(dirent => dirent.name);
-
-const getDirectories = source =>
-  readdirSync(source, { withFileTypes: true })
+function getDirectories(source) {
+  return readdirSync(source, { withFileTypes: true })
     .filter(dirent => dirent.isDirectory())
-    .map(dirent => `${source}${source.slice(-1) === '/' ? '' : '/'}${dirent.name}`);
+    .map(
+      dirent => `${source}${source.slice(-1) === "/" ? "" : "/"}${dirent.name}`
+    );
+}
 
 function getDirectoriesRecursive(dir) {
   let dirs = getDirectories(dir);
@@ -37,7 +34,6 @@ function getDirectoriesRecursive(dir) {
   }
   return dirs;
 }
-
 
 /**
  * Logs a message with timestamp to file
@@ -78,52 +74,48 @@ const uploaded = fs.readFileSync(`${GLOBALS.b2uploaded}`, { encoding: "utf8" });
 const filesDone = uploaded.split("\n");
 
 // Get all files in dir wanted to upload
-const folders = GLOBALS.recursive ? getDirectoriesRecursive(GLOBALS.directory) : getDirectories(GLOBALS.directory);
+const folders = GLOBALS.recursive
+  ? getDirectoriesRecursive(GLOBALS.directory)
+  : getDirectories(GLOBALS.directory);
 folders.push(GLOBALS.directory);
 console.log(folders);
 
 // process.exit(0); // TODO: remove this when working
 
-
 // Loop  all folders
-for (const folder of folders) {
-  // Get files
-  const files = readdirSync(`${folder}`, {
-    withFileTypes: true
-  })
-    .filter(dirent => dirent.isFile())
-    .map(dirent => dirent.name);
-
-  // Loop files
-  loopFiles(folder, files);
+async function loopFolders() {
+  for (const folder of folders) {
+    // Get files
+    const files = readdirSync(`${folder}`, {
+      withFileTypes: true
+    })
+      .filter(dirent => dirent.isFile())
+      .map(dirent => dirent.name);
+  
+    // Loop files
+    await loopFiles(folder, files);
+  }
 }
+loopFolders();
+
 
 /**
  * Loop  over each file and determine whether to upload or not, then attempt to upload
- * @param {*} folder 
- * @param {*} files 
+ * @param {*} folder
+ * @param {*} files
  */
 async function loopFiles(folder, files) {
   for (const fileName of files) {
-    console.log(`attempting ${folder}/${fileName}`);
     const extension = fileName.slice(-3).toLowerCase();
     if (extension === "mov") {
       // movies write it to file for movie files
-      Logging(
-        `${folder}/${fileName}`,
-        "movies_files.txt",
-        false
-      );
+      Logging(`${folder}/${fileName}`, "movies_files.txt", false);
     } else if (!["cr2", "jpg", "raf"].includes(extension)) {
       // not an image type we are looking for write to file skipped
       Logging(`${folder}/${fileName}`, "skipped.txt", false);
-    } else if (!filesDone.includes(fileName)) {
+    } else if (!filesDone.includes(`${folder}/${fileName}`)) {
       // Hasn't been uploaded already so do it
-      Logging(
-        `${folder}/${fileName}`,
-        "attempted.txt",
-        false
-      );
+      Logging(`${folder}/${fileName}`, "attempted.txt", false);
       await uploadFile(`${folder}/${fileName}`);
     }
   }
@@ -137,24 +129,18 @@ async function uploadFile(path) {
   // Get a new upload URL and auth token, if needed.
   if (!GLOBALS.authorised) {
     // Get authorisation
-    await authoriseAccount()
-      .then(auth_json => {
-        GLOBALS.auth_token = auth_json.authorizationToken;
-        GLOBALS.authorised = true;
-        GLOBALS.apiUrl = auth_json.apiUrl;
-        GLOBALS.bucketId = auth_json.allowed.bucketId;
-      })
-      .catch(err => {
-        console.log(`authoriseAccount ${err}`);
-      });
+    let authorised = false;
+    while (!authorised) {
+      authorised = await requestAuth();
+    }
   }
 
   // Set the path we will save it as (faux folder structure)
-  const destPath = path
-    .substring(path.indexOf(GLOBALS.rootDir) + GLOBALS.rootDir.length)
-    .replace("\\", "/")
-    .replace("!", "")
-    .replace(" ", "_");
+  const destPath = encodeURI(path.substring(path.indexOf(GLOBALS.rootDir) + GLOBALS.rootDir.length));
+    // .replace(/\\/g, "/")
+    // .replace("!", "")
+    // .replace(/\s/g, "%20")
+    // .replace(/&/g, "%26");
 
   // Get upload url
   let success = false;
@@ -164,20 +150,41 @@ async function uploadFile(path) {
 }
 
 /**
- * Attempt to upload file and return true or false for success
- * @param {*} path 
- * @param {*} destPath 
+ * Request auth token and upload url
  */
-async function attemptUpload(path, destPath) {
-  let auth_token, uploadUrl;
-  await getUploadURL()
-    .then(uploadURL_json => {
-      auth_token = uploadURL_json.authorizationToken;
-      uploadUrl = uploadURL_json.uploadUrl;
+async function requestAuth() {
+  await authoriseAccount()
+    .then(auth_json => {
+      GLOBALS.auth_token = auth_json.authorizationToken;
+      GLOBALS.authorised = true;
+      GLOBALS.apiUrl = auth_json.apiUrl;
+      GLOBALS.bucketId = auth_json.allowed.bucketId;
     })
     .catch(err => {
-      console.log(`getUploadURL ${err}`);
+      console.log(`authoriseAccount ${err}`);
     });
+  return (GLOBALS.auth_token !== undefined && GLOBALS.auth_token !== '');
+}
+
+/**
+ * Attempt to upload file and return true or false for success
+ * @param {*} path
+ * @param {*} destPath
+ */
+async function attemptUpload(path, destPath) {
+  let uploadURL_json;
+  while (uploadURL_json === undefined) {
+    uploadURL_json = await getUploadURL();
+    // .then(uploadURL_json => {
+    //   auth_token = uploadURL_json.authorizationToken;
+    //   uploadUrl = uploadURL_json.uploadUrl;
+    // })
+    // .catch(err => {
+    //   console.log(`getUploadURL ${err}`);
+    // });
+  }
+  let auth_token = uploadURL_json.authorizationToken;
+  let uploadUrl = uploadURL_json.uploadUrl;
 
   if (uploadUrl !== undefined) {
     let res = await performUpload(auth_token, uploadUrl, path, destPath);
@@ -208,6 +215,9 @@ async function authoriseAccount() {
     })
     .then(json => {
       response = json;
+    })
+    .catch(err => {
+      response = err;
     });
   return response;
 }
@@ -218,7 +228,7 @@ async function authoriseAccount() {
 async function getUploadURL() {
   let response;
 
-  await fetch(`${GLOBALS.apiUrl}/b2api/v2/b2_get_upload_url`, {
+  await fetch(encodeURI(`${GLOBALS.apiUrl}/b2api/v2/b2_get_upload_url`), {
     method: "POST",
     headers: {
       Authorization: GLOBALS.auth_token
@@ -265,16 +275,17 @@ async function performUpload(auth, uploadUrl, filePath, destination_path) {
         Logging(filePath, "b2uploaded.txt", false);
       } else if (json.status === 400) {
         // bad request
-        console.log("bad request");
+        console.log(json.message);
+        console.log(destination_path);
       } else if (json.status === 401) {
         // unauthorized in some way
-        console.log("unauthorized");
+        console.log(json.message);
       } else if (json.status === 403) {
         // usage cap exceeded
-        console.log("usage cap");
+        console.log(json.message);
       } else if (json.status === 408) {
         // request timeout
-        console.log("timeout");
+        console.log(json.message);
       } else if (json.status === 503) {
         // call get_upload_url again
         console.log("call get_upload_url again");
