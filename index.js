@@ -78,26 +78,42 @@ const folders = GLOBALS.recursive
   ? getDirectoriesRecursive(GLOBALS.directory)
   : getDirectories(GLOBALS.directory);
 folders.push(GLOBALS.directory);
-console.log(folders);
-
-// process.exit(0); // TODO: remove this when working
 
 // Loop  all folders
 async function loopFolders() {
   for (const folder of folders) {
-    // Get files
-    const files = readdirSync(`${folder}`, {
-      withFileTypes: true
-    })
-      .filter(dirent => dirent.isFile())
-      .map(dirent => dirent.name);
-  
-    // Loop files
-    await loopFiles(folder, files);
+    // Get on server
+    const onB2 = await getFileListFromB2(
+      folder.substring(
+        folder.indexOf(GLOBALS.rootDir) + GLOBALS.rootDir.length
+      ) + "/"
+    );
+    if (onB2.files !== undefined) {
+      const filesStored = onB2.files.map(o =>
+        o.fileName.substring(o.fileName.lastIndexOf("/") + 1)
+      );
+
+      // Get files
+      const files = readdirSync(`${folder}`, {
+        withFileTypes: true
+      })
+        .filter(dirent => dirent.isFile())
+        .reduce((acc, dirent) => {
+          if (!filesStored.includes(dirent.name)) {
+            acc.push(dirent.name);
+          }
+          return acc;
+        }, []);
+
+      console.log(`Processing ${folder} with ${files.length} files and ${filesStored.length} on server`);
+
+      // Loop files
+      await loopFiles(folder, files);
+    }
   }
+  process.exit(0);
 }
 loopFolders();
-
 
 /**
  * Loop  over each file and determine whether to upload or not, then attempt to upload
@@ -113,11 +129,16 @@ async function loopFiles(folder, files) {
     } else if (!["cr2", "jpg", "raf"].includes(extension)) {
       // not an image type we are looking for write to file skipped
       Logging(`${folder}/${fileName}`, "skipped.txt", false);
-    } else if (!filesDone.includes(`${folder}/${fileName}`)) {
+    } else {
       // Hasn't been uploaded already so do it
       Logging(`${folder}/${fileName}`, "attempted.txt", false);
       await uploadFile(`${folder}/${fileName}`);
     }
+    // } else if (!filesDone.includes(`${folder}/${fileName}`)) {
+    //   // Hasn't been uploaded already so do it
+    //   Logging(`${folder}/${fileName}`, "attempted.txt", false);
+    //   await uploadFile(`${folder}/${fileName}`);
+    // }
   }
 }
 
@@ -136,16 +157,20 @@ async function uploadFile(path) {
   }
 
   // Set the path we will save it as (faux folder structure)
-  const destPath = encodeURI(path.substring(path.indexOf(GLOBALS.rootDir) + GLOBALS.rootDir.length));
-    // .replace(/\\/g, "/")
-    // .replace("!", "")
-    // .replace(/\s/g, "%20")
-    // .replace(/&/g, "%26");
+  const destPath = encodeURIComponent(
+    path.substring(path.indexOf(GLOBALS.rootDir) + GLOBALS.rootDir.length)
+  );
+  // .replace(/\\/g, "/")
+  // .replace("!", "")
+  // .replace(/\s/g, "%20")
+  // .replace(/&/g, "%26");
 
   // Get upload url
   let success = false;
-  while (!success) {
+  let attempts = 0;
+  while (!success && attempts < 5) {
     success = await attemptUpload(path, destPath);
+    attempts++;
   }
 }
 
@@ -163,7 +188,7 @@ async function requestAuth() {
     .catch(err => {
       console.log(`authoriseAccount ${err}`);
     });
-  return (GLOBALS.auth_token !== undefined && GLOBALS.auth_token !== '');
+  return GLOBALS.auth_token !== undefined && GLOBALS.auth_token !== "";
 }
 
 /**
@@ -175,20 +200,13 @@ async function attemptUpload(path, destPath) {
   let uploadURL_json;
   while (uploadURL_json === undefined) {
     uploadURL_json = await getUploadURL();
-    // .then(uploadURL_json => {
-    //   auth_token = uploadURL_json.authorizationToken;
-    //   uploadUrl = uploadURL_json.uploadUrl;
-    // })
-    // .catch(err => {
-    //   console.log(`getUploadURL ${err}`);
-    // });
   }
   let auth_token = uploadURL_json.authorizationToken;
   let uploadUrl = uploadURL_json.uploadUrl;
 
   if (uploadUrl !== undefined) {
     let res = await performUpload(auth_token, uploadUrl, path, destPath);
-    return res !== 503;
+    return res === 200;
   }
 }
 
@@ -269,7 +287,7 @@ async function performUpload(auth, uploadUrl, filePath, destination_path) {
       return res.json();
     })
     .then(json => {
-      response = json.status;
+      response = json.status === undefined ? 200 : json.status;
       if (json.action === "upload") {
         // uploaded
         Logging(filePath, "b2uploaded.txt", false);
@@ -290,6 +308,49 @@ async function performUpload(auth, uploadUrl, filePath, destination_path) {
         // call get_upload_url again
         console.log("call get_upload_url again");
       }
+    })
+    .catch(err => {
+      console.log(err);
+      response = err;
+    });
+
+  return response;
+}
+
+/**
+ * Return up to 1000 files in folder on b2
+ * @param {*} folderName should not include E:/Photos/ and must include / at the end
+ */
+async function getFileListFromB2(folderName) {
+  if (!GLOBALS.authorised) {
+    // Get authorisation
+    let authorised = false;
+    while (!authorised) {
+      authorised = await requestAuth();
+    }
+  }
+
+  let response;
+  await fetch(encodeURI(`${GLOBALS.apiUrl}/b2api/v2/b2_list_file_names`), {
+    method: "POST",
+    headers: {
+      Authorization: GLOBALS.auth_token
+    },
+    body: `{
+      \"bucketId\":\"${GLOBALS.bucketId}\",
+      \"prefix\":\"${folderName}\",
+      \"delimiter\":\"/\",
+      \"maxFileCount\":10000
+    }`
+  })
+    .then(res => {
+      return res.json();
+    })
+    .then(json => {
+      response = json;
+    })
+    .catch(err => {
+      console.log(`fetch in getFileListFromB2 ${err}`);
     });
 
   return response;
