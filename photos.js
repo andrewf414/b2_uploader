@@ -44,7 +44,7 @@ let auth_json;
 
 // Loop over the folders and files within
 (async () => {
-  for (const folder of folders.slice(0,2)) {
+  for (const folder of folders) {
     // Get files
     const files = readdirSync(`${folder}`, {
       withFileTypes: true
@@ -119,7 +119,7 @@ async function uploadFile(path) {
         body: fileBuffer,
       }).then(res => {
         console.log('success');
-        fs.appendFileSync(`E:/Google_Drive/backblaze/b2uploaded.txt\r\n`, path)
+        fs.appendFileSync(`E:/Google_Drive/backblaze/b2uploaded.txt`, `${path}\r\n`)
         succeeded = true;
         validToken = true;
       }).catch(err => {
